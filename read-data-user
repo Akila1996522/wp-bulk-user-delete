@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Database Credentials
+DB_NAME="Database_Name"
+DB_USER="Database_user"
+DB_PASS="Database_password"
+DB_HOST="localhost"  # Change if using a remote database
+WP_UPLOADS_DIR="/folder/path/wp-content/uploads" # Adjust if your uploads directory is different
+
+# Input File with User Emails
+USER_EMAIL_FILE="user_emails.txt"
+
+# Output CSV File
+OUTPUT_CSV="wp_selected_users_data.csv"
+
+# Check if the input file exists
+if [[ ! -f "$USER_EMAIL_FILE" ]]; then
+    echo "Error: $USER_EMAIL_FILE not found!"
+    exit 1
+fi
+
+# Create or overwrite the CSV file with headers
+echo "User Email,Post ID,Post Title,Post Type,Post Status,Media File Path,Comment ID,Comment Content,Meta Key,Meta Value" > "$OUTPUT_CSV"
+
+# Process each email in the file
+while IFS= read -r USER_EMAIL; do
+    echo -e "\nProcessing user: $USER_EMAIL"
+
+    # Get User ID from wp_users
+    USER_ID=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    SELECT ID FROM wp_users WHERE user_email='$USER_EMAIL';
+    ")
+
+    # Check if User Exists
+    if [[ -z "$USER_ID" ]]; then
+        echo "User not found: $USER_EMAIL"
+        continue
+    fi
+
+    # Find User's Posts
+    POSTS=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    SELECT ID, post_title, post_type, post_status FROM wp_posts WHERE post_author=$USER_ID;
+    ")
+
+    # Loop through posts and write to CSV
+    while IFS=$'\t' read -r POST_ID POST_TITLE POST_TYPE POST_STATUS; do
+        # Find User's Media Files
+        MEDIA_FILES=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+        SELECT guid FROM wp_posts WHERE post_author=$USER_ID AND post_type='attachment';
+        ")
+
+        # Extract Media File Paths
+        while IFS= read -r GUID; do
+            FILE_PATH="${GUID#*$WP_UPLOADS_DIR/}"
+            # Write the Post and Media File Data to CSV
+            echo "$USER_EMAIL,$POST_ID,$POST_TITLE,$POST_TYPE,$POST_STATUS,$WP_UPLOADS_DIR/$FILE_PATH" >> "$OUTPUT_CSV"
+        done <<< "$MEDIA_FILES"
+
+        # Find User's Comments
+        COMMENTS=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+        SELECT comment_ID, comment_content FROM wp_comments WHERE user_id=$USER_ID;
+        ")
+
+        # Loop through comments and write to CSV
+        while IFS=$'\t' read -r COMMENT_ID COMMENT_CONTENT; do
+            # Write the Comment Data to CSV
+            echo "$USER_EMAIL,$POST_ID,$POST_TITLE,$POST_TYPE,$POST_STATUS,,,$COMMENT_ID,$COMMENT_CONTENT" >> "$OUTPUT_CSV"
+        done <<< "$COMMENTS"
+
+        # Find User's Metadata
+        METADATA=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+        SELECT meta_key, meta_value FROM wp_usermeta WHERE user_id=$USER_ID;
+        ")
+
+        # Loop through metadata and write to CSV
+        while IFS=$'\t' read -r META_KEY META_VALUE; do
+            # Write the Metadata Data to CSV
+            echo "$USER_EMAIL,$POST_ID,$POST_TITLE,$POST_TYPE,$POST_STATUS,,,,$META_KEY,$META_VALUE" >> "$OUTPUT_CSV"
+        done <<< "$METADATA"
+
+    done <<< "$POSTS"
+
+done < "$USER_EMAIL_FILE"
+
+echo "All selected users' data saved to $OUTPUT_CSV"
