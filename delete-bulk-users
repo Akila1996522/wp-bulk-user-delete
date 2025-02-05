@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Database Credentials
+DB_NAME="Database_Name"
+DB_USER="Database_User"
+DB_PASS="Database_Password"
+DB_HOST="localhost"  # Change if using a remote database
+WP_UPLOADS_DIR="/folder/path/wp-content/uploads" # Adjust if your uploads directory is different
+
+# WordPress Uploads Directory
+WP_UPLOADS_DIR="/folder/path/wp-content/uploads"  # Adjust if needed
+
+# Input File with User Emails
+USER_EMAIL_FILE="user_emails.txt"
+
+# Check if the input file exists
+if [[ ! -f "$USER_EMAIL_FILE" ]]; then
+    echo "Error: $USER_EMAIL_FILE not found!"
+    exit 1
+fi
+
+# Process each email in the file
+while IFS= read -r USER_EMAIL; do
+    echo -e "\nProcessing user: $USER_EMAIL"
+
+    # Get User ID from wp_users
+    USER_ID=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    SELECT ID FROM wp_users WHERE user_email='$USER_EMAIL';
+    ")
+
+    # Check if User Exists
+    if [[ -z "$USER_ID" ]]; then
+        echo "User not found: $USER_EMAIL"
+        continue
+    fi
+
+    echo "Deleting content for user: $USER_EMAIL (User ID: $USER_ID)"
+
+    # Find and delete the user's posts
+    POSTS=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    SELECT ID FROM wp_posts WHERE post_author=$USER_ID;
+    ")
+
+    for POST_ID in $POSTS; do
+        echo "Deleting Post ID: $POST_ID"
+        mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+        DELETE FROM wp_posts WHERE ID=$POST_ID;
+        DELETE FROM wp_postmeta WHERE post_id=$POST_ID;
+        DELETE FROM wp_comments WHERE comment_post_ID=$POST_ID;
+        "
+    done
+
+    # Find and delete the user's media files
+    MEDIA_FILES=$(mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    SELECT guid FROM wp_posts WHERE post_author=$USER_ID AND post_type='attachment';
+    ")
+
+    for MEDIA_FILE in $MEDIA_FILES; do
+        FILE_PATH="${MEDIA_FILE#*$WP_UPLOADS_DIR/}"
+        echo "Deleting File: $WP_UPLOADS_DIR/$FILE_PATH"
+        rm -f "$WP_UPLOADS_DIR/$FILE_PATH"
+    done
+
+    # Delete user's comments
+    echo "Deleting Comments for User ID: $USER_ID"
+    mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    DELETE FROM wp_comments WHERE user_id=$USER_ID;
+    "
+
+    # Delete user's metadata
+    echo "Deleting Metadata for User ID: $USER_ID"
+    mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    DELETE FROM wp_usermeta WHERE user_id=$USER_ID;
+    "
+
+    # Finally, delete the user
+    echo "Deleting User: $USER_EMAIL"
+    mysql -u "$DB_USER" -p"$DB_PASS" -D "$DB_NAME" -se "
+    DELETE FROM wp_users WHERE ID=$USER_ID;
+    "
+
+    echo "Successfully deleted user: $USER_EMAIL and associated data."
+done < "$USER_EMAIL_FILE"
+
+echo "All selected users and their content have been deleted."
